@@ -1,33 +1,40 @@
 /*
- *   Copyright 2020 Aleix Pol Gonzalez <aleixpol@kde.org>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU Library General Public License as
- *   published by the Free Software Foundation; either version 2, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU Library General Public License for more details
- *
- *   You should have received a copy of the GNU Library General Public
- *   License along with this program; if not, write to the
- *   Free Software Foundation, Inc.,
- *   51 Franklin Street, Fifth Floor, Boston, MA  2.010-1301, USA.
- */
+    SPDX-FileCopyrightText: 2020 Aleix Pol Gonzalez <aleixpol@kde.org>
 
-import QtQuick.Window 2.14
+    SPDX-License-Identifier: LGPL-2.0-or-later
+*/
+
+import QtQuick 2.15
+import QtQuick.Window 2.15
+
+import org.kde.plasma.core 2.0 as PlasmaCore
 import org.kde.taskmanager 0.1 as TaskManager
 
-TaskManager.PipeWireSourceItem {
-    visible: waylandItem.nodeId > 0
-    nodeId: waylandItem.nodeId
-
+// opacity doesn't work in the root item
+Item {
     anchors.fill: parent
 
-    TaskManager.ScreencastingRequest {
-        id: waylandItem
-        uuid: toolTipDelegate.Window.visibility === Window.Hidden ? "" : thumbnailSourceItem.winId
+    TaskManager.PipeWireSourceItem {
+        id: pipeWireSourceItem
+
+        enabled: false // Must be set in pipewiresourceitem.cpp so opacity animation can work
+        visible: waylandItem.nodeId > 0
+        nodeId: waylandItem.nodeId
+
+        anchors.fill: parent
+
+        opacity: enabled ? 1 : 0
+
+        TaskManager.ScreencastingRequest {
+            id: waylandItem
+            uuid: toolTipDelegate.Window.visibility === Window.Hidden ? "" : thumbnailSourceItem.winId
+        }
+
+        Behavior on opacity {
+            OpacityAnimator {
+                duration: PlasmaCore.Units.longDuration
+                easing.type: Easing.OutCubic
+            }
+        }
     }
 }

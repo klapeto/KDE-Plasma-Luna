@@ -1,34 +1,25 @@
-/***************************************************************************
- *   Copyright (C) 2012-2013 by Eike Hein <hein@kde.org>                   *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA .        *
- ***************************************************************************/
+/*
+    SPDX-FileCopyrightText: 2012-2013 Eike Hein <hein@kde.org>
+    SPDX-FileCopyrightText: 2021 Fushan Wen <qydwhotmail@gmail.com>
 
-import QtQuick 2.4
-import QtQuick.Window 2.2
+    SPDX-License-Identifier: GPL-2.0-or-later
+*/
+
+import QtQuick 2.15
+// Deliberately imported after QtQuick to avoid missing restoreMode property in Binding. Fix in Qt 6.
+import QtQml 2.15
+import QtQml.Models 2.15
+import QtQuick.Window 2.15
 
 import org.kde.plasma.core 2.0 as PlasmaCore
-import org.kde.plasma.extras 2.0 as PlasmaExtras
+import org.kde.plasma.components 3.0 as PlasmaComponents3
 import org.kde.draganddrop 2.0
 
 import "code/layout.js" as LayoutManager
 
 PlasmaCore.Dialog {
     id: groupDialog
-    visible: false
+    visible: true
 
     type: PlasmaCore.Dialog.PopupMenu
     flags: Qt.WindowStaysOnTopHint
@@ -37,264 +28,118 @@ PlasmaCore.Dialog {
 
     readonly property int preferredWidth: Screen.width / (3 * Screen.devicePixelRatio)
     readonly property int preferredHeight: Screen.height / (2 * Screen.devicePixelRatio)
-    readonly property int contentWidth: scrollArea.overflowing ? mainItem.width - (PlasmaCore.Units.smallSpacing * 3) : mainItem.width
-    readonly property TextMetrics textMetrics: TextMetrics {}
-    property alias overflowing: scrollArea.overflowing
-    property alias activeTask: focusActiveTaskTimer.targetIndex
+    readonly property int contentWidth: mainItem.width // No padding here to avoid text elide.
+
+    property alias overflowing: scrollView.overflowing
     property var _oldAppletStatus: PlasmaCore.Types.UnknownStatus
 
-    function selectTask(task) {
-        if (!task) {
+    function findActiveTaskIndex() {
+        if (!tasksModel.activeTask) {
             return;
         }
-
-        task.forceActiveFocus();
-        scrollArea.ensureItemVisible(task);
+        for (let i = 0; i < groupListView.count; i++) {
+            if (tasksModel.makeModelIndex(visualParent.itemIndex, i) === tasksModel.activeTask) {
+                groupListView.positionViewAtIndex(i, ListView.Contain); // Prevent visual glitches
+                groupListView.currentIndex = i;
+                return;
+            }
+        }
     }
+
 
     mainItem: MouseHandler {
         id: mouseHandler
+        width: Math.min(groupDialog.preferredWidth, Math.max(groupListView.maxWidth, groupDialog.visualParent.width))
+        height: Math.min(groupDialog.preferredHeight, groupListView.maxHeight)
 
-        target: taskList
-        handleWheelEvents: !scrollArea.overflowing
+        target: groupListView
+        handleWheelEvents: !scrollView.overflowing
+        isGroupDialog: true
 
-        Timer {
-            id: focusActiveTaskTimer
-
-            property var targetIndex: null
-
-            interval: 0
-            repeat: false
-
-            onTriggered: {
-                // Now we can home in on the previously active task
-                // collected in groupDialog.onVisibleChanged.
-
-                if (targetIndex != null) {
-                    for (var i = 0; i < groupRepeater.count; ++i) {
-                        var task = groupRepeater.itemAt(i);
-
-                        if (task.modelIndex() === targetIndex) {
-                            selectTask(task);
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        PlasmaExtras.ScrollArea {
-            id: scrollArea
-
+        PlasmaComponents3.ScrollView {
+            id: scrollView
             anchors.fill: parent
+            readonly property bool overflowing: leftPadding > 0 || rightPadding > 0 // Scrollbar is visible
 
-            readonly property bool overflowing: (viewport.height < contentItem.height)
+            PlasmaComponents3.ScrollBar.horizontal.policy: PlasmaComponents3.ScrollBar.AlwaysOff
 
-            horizontalScrollBarPolicy: Qt.ScrollBarAlwaysOff
+            ListView {
+                id: groupListView
 
-            function ensureItemVisible(item) {
-                var itemTop = item.y;
-                var itemBottom = (item.y + item.height);
+                readonly property int maxWidth: groupFilter.maxTextWidth
+                                                + LayoutManager.horizontalMargins()
+                                                + PlasmaCore.Units.iconSizes.medium
+                                                + 2 * (LayoutManager.labelMargin + LayoutManager.iconMargin)
+                                                + scrollView.leftPadding + scrollView.rightPadding
+                // Use groupFilter.count because sometimes count is not updated in time (BUG 446105)
+                readonly property int maxHeight: groupFilter.count * (LayoutManager.verticalMargins() + Math.max(theme.mSize(theme.defaultFont).height, PlasmaCore.Units.iconSizes.medium))
 
-                if (itemTop < flickableItem.contentY) {
-                    flickableItem.contentY = itemTop;
-                }
+                model: DelegateModel {
+                    id: groupFilter
 
-                if ((itemBottom - flickableItem.contentY) > viewport.height) {
-                    flickableItem.contentY = Math.abs(viewport.height - itemBottom);
-                }
-            }
+                    readonly property TextMetrics textMetrics: TextMetrics {}
+                    property int maxTextWidth: 0
 
-            TaskList {
-                id: taskList
+                    model: tasksModel
+                    rootIndex: tasksModel.makeModelIndex(groupDialog.visualParent.itemIndex)
+                    delegate: Task {
+                        width: groupListView.width
+                        visible: true
+                        inPopup: true
 
-                width: parent.width
+                        ListView.onRemove: Qt.callLater(groupFilter.updateMaxTextWidth)
+                        Connections {
+                            enabled: index < 20 // 20 is based on performance considerations.
 
-                add: Transition {
-                    // We trigger a null-interval timer in the first add
-                    // transition after setting the model so onTriggered
-                    // will run after the Flow has positioned items.
-
-                    ScriptAction {
-                        script: {
-                            if (groupRepeater.aboutToPopulate) {
-                                focusActiveTaskTimer.restart();
-                                groupRepeater.aboutToPopulate = false;
+                            function onLabelTextChanged() { // ListView.onAdd included
+                                if (groupFilter.maxTextWidth === 0) {
+                                    // Update immediately to avoid shrinking
+                                    groupFilter.updateMaxTextWidth();
+                                } else {
+                                    Qt.callLater(groupFilter.updateMaxTextWidth);
+                                }
                             }
                         }
                     }
-                }
 
-                onAnimatingChanged: {
-                    if (!animating) {
-                        Qt.callLater(updateSize);
-                    }
-                }
-
-                Repeater {
-                    id: groupRepeater
-
-                    property bool aboutToPopulate: false
-
-                    function currentIndex() {
-                        for (var i = 0; i < count; ++i) {
-                            if (itemAt(i).activeFocus) {
-                                return i;
+                    function updateMaxTextWidth() {
+                        let tempMaxTextWidth = 0;
+                        // 20 is based on performance considerations.
+                        for (let i = 0; i < Math.min(count, 20); i++) {
+                            textMetrics.text = items.get(i).model.display;
+                            if (textMetrics.boundingRect.width > tempMaxTextWidth) {
+                                tempMaxTextWidth = textMetrics.boundingRect.width;
                             }
                         }
-
-                        return -1;
+                        maxTextWidth = tempMaxTextWidth;
                     }
+                }
 
-                    onItemAdded: {
-                        item.labelTextChanged.connect(updateSize);
-                        Qt.callLater(updateSize)
-                    }
+                reuseItems: false
 
-                    onItemRemoved: {
-                        if (groupDialog.visible && index > 0 && index == count) {
-                            Qt.callLater(updateSize);
-                        }
+                onCountChanged: {
+                    if (count > 0) {
+                        backend.cancelHighlightWindows()
+                    } else {
+                        groupDialog.visible = false;
                     }
                 }
             }
-
-            Component.onCompleted: {
-                flickableItem.boundsBehavior = Flickable.StopAtBounds;
-            }
-        }
-
-        Keys.onUpPressed: {
-            var currentIndex = groupRepeater.currentIndex();
-            // In doubt focus the last item, so we start at the bottom when user
-            // initially presses up.
-            if (currentIndex === -1) {
-                selectTask(groupRepeater.itemAt(groupRepeater.count - 1));
-                return;
-            }
-
-            var previousIndex = currentIndex - 1;
-            if (previousIndex < 0) {
-                previousIndex = groupRepeater.count - 1;
-            }
-
-            selectTask(groupRepeater.itemAt(previousIndex));
-        }
-
-        Keys.onDownPressed: {
-            var currentIndex = groupRepeater.currentIndex();
-            // In doubt focus the first item, also wrap around.
-            if (currentIndex === -1 || currentIndex + 1 >= groupRepeater.count) {
-                selectTask(groupRepeater.itemAt(0));
-                return;
-            }
-
-            selectTask(groupRepeater.itemAt(currentIndex + 1));
-        }
-
-        Keys.onEscapePressed: groupDialog.visible = false;
-    }
-
-    data: [
-        VisualDataModel {
-            id: groupFilter
-
-            delegate: Task {
-                visible: true
-                inPopup: true
-            }
-        }
-    ]
-
-    onVisualParentChanged: {
-        if (visible && visualParent) {
-            attachModel();
-        } else {
-            visible = false;
         }
     }
 
     onVisibleChanged: {
-        if (visible && visualParent) {
+        if (visible) {
             _oldAppletStatus = plasmoid.status;
             plasmoid.status = PlasmaCore.Types.RequiresAttentionStatus;
 
-            attachModel();
-
             groupDialog.requestActivate();
-            mouseHandler.forceActiveFocus();
+            groupListView.forceActiveFocus(); // Active focus on ListView so keyboard navigation can work.
+            Qt.callLater(findActiveTaskIndex);
         } else {
             plasmoid.status = _oldAppletStatus;
-            visualParent = null;
-            groupRepeater.model = undefined;
-            groupFilter.model = undefined;
-            groupFilter.rootIndex = undefined;
-        }
-    }
-
-    function attachModel() {
-        if (!visualParent) {
-            return;
-        }
-
-        if (!groupFilter.model) {
-            groupFilter.model = tasksModel;
-        }
-
-        groupRepeater.aboutToPopulate = true;
-
-        groupFilter.rootIndex = tasksModel.makeModelIndex(visualParent.itemIndex);
-
-        if (!groupRepeater.model) {
-            groupRepeater.model = groupFilter;
-        }
-    }
-
-    function updateSize() {
-        if (!visible) {
-            return;
-        }
-
-        if (!visualParent) {
-            visible = false;
-            return;
-        }
-
-        if (!visualParent.childCount) {
-            visible = false;
-        // Setting VisualDataModel.rootIndex drops groupRepeater.count to 0
-        // before the actual row count. updateSize is therefore invoked twice;
-        // only update size once the repeater count matches the model role.
-        } else if (!groupRepeater.aboutToPopulate || visualParent.childCount === groupRepeater.count) {
-            var task;
-            var maxWidth = 0;
-            var maxHeight = 0;
-
-            backend.cancelHighlightWindows();
-
-            for (var i = 0; i < taskList.children.length - 1; ++i) {
-                task = taskList.children[i];
-
-                textMetrics.text = task.labelText;
-                var textWidth = textMetrics.boundingRect.width;
-
-                if (textWidth > maxWidth) {
-                    maxWidth = textWidth;
-                }
-            }
-
-            maxHeight = groupRepeater.count * (LayoutManager.verticalMargins() + Math.max(theme.mSize(theme.defaultFont).height, PlasmaCore.Units.iconSizes.medium));
-
-            maxWidth += LayoutManager.horizontalMargins() + PlasmaCore.Units.iconSizes.medium + 2 * PlasmaCore.Units.smallSpacing;
-
-            // Add horizontal space for scrollbar if needed.
-            // FIXME TODO HACK: Use actual scrollbar width instead of a good guess.
-            if (maxHeight > preferredHeight) {
-                maxWidth += (PlasmaCore.Units.smallSpacing * 3);
-            }
-
-            mainItem.height = Math.min(preferredHeight, maxHeight);
-            mainItem.width = Math.min(preferredWidth, (tasks.vertical ? Math.max(maxWidth, tasks.width) : Math.min(maxWidth, tasks.width)));
+            tasks.groupDialog = null;
+            destroy();
         }
     }
 }

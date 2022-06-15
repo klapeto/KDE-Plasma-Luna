@@ -1,24 +1,11 @@
-/***************************************************************************
- *   Copyright (C) 2012-2016 by Eike Hein <hein@kde.org>                   *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA .        *
- ***************************************************************************/
+/*
+    SPDX-FileCopyrightText: 2012-2016 Eike Hein <hein@kde.org>
 
-import QtQuick 2.0
-import QtQuick.Layouts 1.1
+    SPDX-License-Identifier: GPL-2.0-or-later
+*/
+
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
 import QtQml 2.15
 
 import org.kde.plasma.plasmoid 2.0
@@ -36,11 +23,13 @@ MouseArea {
     anchors.fill: parent
     hoverEnabled: true
 
-    property bool vertical: (plasmoid.formFactor === PlasmaCore.Types.Vertical)
-    property bool iconsOnly: (plasmoid.pluginName === "org.kde.plasma.icontasks")
+    property bool vertical: plasmoid.formFactor === PlasmaCore.Types.Vertical
+    property bool iconsOnly: plasmoid.pluginName === "org.kde.plasma.icontasks"
 
-    property QtObject contextMenuComponent: Qt.createComponent("ContextMenu.qml");
-    property QtObject pulseAudioComponent: Qt.createComponent("PulseAudio.qml");
+    property var toolTipOpenedByClick: null
+
+    property QtObject contextMenuComponent: Qt.createComponent("ContextMenu.qml")
+    property QtObject pulseAudioComponent: Qt.createComponent("PulseAudio.qml")
 
     property bool needLayoutRefresh: false;
     property variant taskClosedWithMouseMiddleButton: []
@@ -61,15 +50,23 @@ MouseArea {
     Layout.minimumHeight: !tasks.vertical ? 0 : LayoutManager.preferredMinHeight()
 
 //BEGIN TODO: this is not precise enough: launchers are smaller than full tasks
-    Layout.preferredWidth: tasks.vertical ? PlasmaCore.Units.gridUnit * 10 : ((LayoutManager.logicalTaskCount() * LayoutManager.preferredMaxWidth()) / LayoutManager.calculateStripes());
-    Layout.preferredHeight: tasks.vertical ? ((LayoutManager.logicalTaskCount() * LayoutManager.preferredMaxHeight()) / LayoutManager.calculateStripes()) : PlasmaCore.Units.gridUnit * 2;
+
+    Layout.preferredWidth: tasks.vertical ? PlasmaCore.Units.gridUnit * 10 :
+                           (LayoutManager.logicalTaskCount() === 0 ? 0.01 : //Return a small non-zero value to make the panel account for the change in size
+                           (LayoutManager.logicalTaskCount() * LayoutManager.preferredMaxWidth()) / LayoutManager.calculateStripes())
+
+
+    Layout.preferredHeight: !tasks.vertical ? PlasmaCore.Units.gridUnit * 2 :
+                            (LayoutManager.logicalTaskCount() === 0 ? 0.01 : //Same as above
+                            (LayoutManager.logicalTaskCount() * LayoutManager.preferredMaxHeight()) / LayoutManager.calculateStripes())
+
 //END TODO
 
     property Item dragSource: null
 
     signal requestLayout
     signal windowsHovered(variant winIds, bool hovered)
-    signal presentWindows(variant winIds)
+    signal activateWindowView(variant winIds)
 
     onWidthChanged: {
         taskList.width = LayoutManager.layoutWidth();
@@ -132,7 +129,6 @@ MouseArea {
 
         sortMode: sortModeEnumValue(plasmoid.configuration.sortingStrategy)
         launchInPlace: iconsOnly && plasmoid.configuration.sortingStrategy === 1
-        
         separateLaunchers: {
             if (!iconsOnly && !plasmoid.configuration.separateLaunchers
                 && plasmoid.configuration.sortingStrategy === 1) {
@@ -196,32 +192,19 @@ MouseArea {
         }
     }
 
-    Connections {
-        target: tasksModel
-
-        function onActiveTaskChanged() {
-            if (!plasmoid.configuration.groupPopups) {
-                return;
-            }
-            if (tasksModel.activeTask.parent.valid) {
-                groupDialog.activeTask = tasksModel.activeTask;
-            }
-        }
-    }
-
     TaskManager.VirtualDesktopInfo {
         id: virtualDesktopInfo
     }
 
     TaskManager.ActivityInfo {
         id: activityInfo
+        readonly property string nullUuid: "00000000-0000-0000-0000-000000000000"
     }
 
     TaskManagerApplet.Backend {
         id: backend
 
         taskManagerItem: tasks
-        groupDialog: groupDialog
         highlightWindows: plasmoid.configuration.highlightWindows
 
         onAddLauncher: {
@@ -233,6 +216,12 @@ MouseArea {
         id: mpris2Source
         engine: "mpris2"
         connectedSources: sources
+        onSourceAdded: {
+            connectSource(source);
+        }
+        onSourceRemoved: {
+            disconnectSource(source);
+        }
         function sourceNameForLauncherUrl(launcherUrl, pid) {
             if (!launcherUrl || launcherUrl === "") {
                 return "";
@@ -244,6 +233,8 @@ MouseArea {
             if (desktopFileName.indexOf("applications:") === 0) {
                 desktopFileName = desktopFileName.substr(13)
             }
+
+            let fallbackSource = "";
 
             for (var i = 0, length = connectedSources.length; i < length; ++i) {
                 var source = connectedSources[i];
@@ -257,8 +248,15 @@ MouseArea {
                     continue;
                 }
 
-                if (sourceData.DesktopEntry === desktopFileName || (pid && sourceData.InstancePid === pid)) {
+                /**
+                 * If the task is in a group, we can't use desktopFileName to match the task.
+                 * but in case PID match fails, use the match result from desktopFileName.
+                 */
+                if (pid && sourceData.InstancePid === pid) {
                     return source;
+                }
+                if (sourceData.DesktopEntry === desktopFileName) {
+                    fallbackSource = source;
                 }
 
                 var metadata = sourceData.Metadata;
@@ -270,7 +268,8 @@ MouseArea {
                 }
             }
 
-            return ""
+            // If PID match fails, return fallbackSource.
+            return fallbackSource;
         }
 
         function startOperation(source, op) {
@@ -344,14 +343,17 @@ MouseArea {
     Connections {
         target: plasmoid.configuration
 
-        function onLaunchersChanged() { 
-            tasksModel.launcherList = plasmoid.configuration.launchers 
+        function onLaunchersChanged() {
+            tasksModel.launcherList = plasmoid.configuration.launchers
         }
-        function onGroupingAppIdBlacklistChanged() { 
+        function onGroupingAppIdBlacklistChanged() {
             tasksModel.groupingAppIdBlacklist = plasmoid.configuration.groupingAppIdBlacklist;
         }
         function onGroupingLauncherUrlBlacklistChanged() {
             tasksModel.groupingLauncherUrlBlacklist = plasmoid.configuration.groupingLauncherUrlBlacklist;
+        }
+        function onIconSpacingChanged() {
+            taskList.layout();
         }
     }
 
@@ -413,7 +415,7 @@ MouseArea {
         id: openWindowToolTipDelegate
         visible: false
     }
-    
+
     ToolTipDelegate {
         id: pinnedAppToolTipDelegate
         visible: false
@@ -477,7 +479,8 @@ MouseArea {
         }
     }
 
-    GroupDialog { id: groupDialog }
+    readonly property Component groupDialogComponent: Qt.createComponent("GroupDialog.qml")
+    property GroupDialog groupDialog: null
 
     function hasLauncher(url) {
         return tasksModel.launcherPosition(url) != -1;
@@ -497,6 +500,16 @@ MouseArea {
 
         var task = taskRepeater.itemAt(index);
         if (task) {
+            /**
+             * BUG 452187: when activating a task from keyboard, there is no
+             * containsMouse changed signal, so we need to update the tooltip
+             * properties here.
+             */
+            if (plasmoid.configuration.showToolTips
+                && plasmoid.configuration.groupedTaskVisualization === 1) {
+                task.toolTipAreaItem.updateMainItemBindings();
+            }
+
             TaskTools.activateTask(task.modelIndex(), task.m, null, task);
         }
     }
@@ -505,21 +518,21 @@ MouseArea {
         dragSource = null;
     }
 
-    function createContextMenu(rootTask, modelIndex, args) {
-        var initialArgs = args || {}
-        initialArgs.visualParent = rootTask;
-        initialArgs.modelIndex = modelIndex;
-        initialArgs.mpris2Source = mpris2Source;
-        initialArgs.backend = backend;
-
-        return tasks.contextMenuComponent.createObject(rootTask, initialArgs);
+    function createContextMenu(rootTask, modelIndex, args = {}) {
+        const initialArgs = Object.assign(args, {
+            visualParent: rootTask,
+            modelIndex,
+            mpris2Source,
+            backend,
+        });
+        return contextMenuComponent.createObject(rootTask, initialArgs);
     }
 
     Component.onCompleted: {
         tasks.requestLayout.connect(layoutTimer.restart);
         tasks.requestLayout.connect(iconGeometryTimer.restart);
         tasks.windowsHovered.connect(backend.windowsHovered);
-        tasks.presentWindows.connect(backend.presentWindows);
+        tasks.activateWindowView.connect(backend.activateWindowView);
         dragHelper.dropped.connect(resetDragSource);
     }
 }

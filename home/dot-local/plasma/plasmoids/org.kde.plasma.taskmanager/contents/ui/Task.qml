@@ -1,26 +1,14 @@
-/***************************************************************************
- *   Copyright (C) 2012-2013 by Eike Hein <hein@kde.org>                   *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA .        *
- ***************************************************************************/
+/*
+    SPDX-FileCopyrightText: 2012-2013 Eike Hein <hein@kde.org>
 
-import QtQuick 2.0
+    SPDX-License-Identifier: GPL-2.0-or-later
+*/
+
+import QtQuick 2.15
 
 import org.kde.plasma.core 2.0 as PlasmaCore
-import org.kde.plasma.components 2.0 as PlasmaComponents
+import org.kde.plasma.components 2.0 as PlasmaComponents // for DialogStatus
+import org.kde.plasma.components 3.0 as PlasmaComponents3
 import org.kde.draganddrop 2.0
 
 import org.kde.plasma.private.taskmanager 0.1 as TaskManagerApplet
@@ -31,7 +19,8 @@ import "code/tools.js" as TaskTools
 MouseArea {
     id: task
 
-    width: groupDialog.contentWidth
+    activeFocusOnTab: true
+
     height: Math.max(theme.mSize(theme.defaultFont).height, PlasmaCore.Units.iconSizes.medium) + LayoutManager.verticalMargins()
 
     visible: false
@@ -42,7 +31,7 @@ MouseArea {
     readonly property var m: model
 
     readonly property int pid: model.AppPid !== undefined ? model.AppPid : 0
-    readonly property string appName: model.AppName
+    readonly property string appName: model.AppName || ""
     readonly property variant winIdList: model.WinIdList
     property int itemIndex: index
     property bool inPopup: false
@@ -58,6 +47,7 @@ MouseArea {
     readonly property bool smartLauncherEnabled: !inPopup && model.IsStartup !== true
     property QtObject smartLauncherItem: null
     property alias toolTipAreaItem: toolTipArea
+    property alias audioStreamIconLoaderItem: audioStreamIconLoader
 
     property Item audioStreamOverlay
     property var audioStreams: []
@@ -73,7 +63,16 @@ MouseArea {
 
     readonly property bool highlighted: (inPopup && activeFocus) || (!inPopup && containsMouse)
         || (task.contextMenu && task.contextMenu.status === PlasmaComponents.DialogStatus.Open)
-        || (groupDialog.visible && groupDialog.visualParent === task)
+        || (!!tasks.groupDialog && tasks.groupDialog.visualParent === task)
+
+    Accessible.name: task.labelText
+    Accessible.description: task.labelText ? i18n("Activate %1", task.labelText) : ""
+    Accessible.role: Accessible.Button
+
+    onHighlightedChanged: {
+        // ensure it doesn't get stuck with a window highlighted
+        backend.cancelHighlightWindows();
+    }
 
     function showToolTip() {
         toolTipArea.showToolTip();
@@ -94,16 +93,6 @@ MouseArea {
     }
 
     onChildCountChanged: {
-        if (!childCount && groupDialog.visualParent == task) {
-            groupDialog.visible = false;
-
-            return;
-        }
-
-        if (containsMouse) {
-            groupDialog.activeTask = null;
-        }
-
         if (childCount > previousChildCount) {
             tasksModel.requestPublishDelegateGeometry(modelIndex(), backend.globalRect(task), task);
         }
@@ -128,10 +117,6 @@ MouseArea {
         } else {
             pressed = false;
         }
-
-        if (model.IsWindow === true) {
-            tasks.windowsHovered(model.WinIdList, containsMouse);
-        }
     }
 
     onPressed: {
@@ -147,6 +132,22 @@ MouseArea {
             } else {
                 showContextMenu();
             }
+        }
+    }
+
+    onPressAndHold: if (mouse.button === Qt.LeftButton) {
+        /* TODO: make press and hold to open menu exclusive to touch.
+         * I (ndavis) tried `if (lastDeviceType & ~(PointerDevice.Mouse | PointerDevice.TouchPad))`
+         * with a TapHandler. lastDeviceType was gotten from the EventPoint argument of the
+         * grabChanged() signal. ngraham said it wouldn't work because it was preventing single
+         * taps on touch. I didn't have a touch screen to test it with.
+         */
+        // When we're a launcher, there's no window controls, so we can show all
+        // places without the menu getting super huge.
+        if (model.IsLauncher === true) {
+            showContextMenu({showAllPlaces: true})
+        } else {
+            showContextMenu();
         }
     }
 
@@ -214,11 +215,13 @@ MouseArea {
 
     onSmartLauncherEnabledChanged: {
         if (smartLauncherEnabled && !smartLauncherItem) {
-            var smartLauncher = Qt.createQmlObject("
-    import org.kde.plasma.private.taskmanager 0.1 as TaskManagerApplet;
-    TaskManagerApplet.SmartLauncherItem { }", task);
+            const smartLauncher = Qt.createQmlObject(`
+                import org.kde.plasma.private.taskmanager 0.1 as TaskManagerApplet;
 
-            smartLauncher.launcherUrl = Qt.binding(function() { return model.LauncherUrlWithoutIcon; });
+                TaskManagerApplet.SmartLauncherItem { }
+            `, task);
+
+            smartLauncher.launcherUrl = Qt.binding(() => model.LauncherUrlWithoutIcon);
 
             smartLauncherItem = smartLauncher;
         }
@@ -241,6 +244,7 @@ MouseArea {
     }
 
     function showContextMenu(args) {
+        toolTipArea.hideImmediately();
         contextMenu = tasks.createContextMenu(task, modelIndex(), args);
         contextMenu.show();
     }
@@ -286,7 +290,7 @@ MouseArea {
     Connections {
         target: pulseAudio.item
         ignoreUnknownSignals: true // Plasma-PA might not be available
-        function onStreamsChanged() { 
+        function onStreamsChanged() {
             task.updateAudioStreams({delay: true})
         }
     }
@@ -331,63 +335,52 @@ MouseArea {
             anchors.fill: parent
             location: plasmoid.location
 
-            active: !inPopup && !groupDialog.visible && plasmoid.configuration.showToolTips
-            interactive: true
+            enabled: plasmoid.configuration.showToolTips && !inPopup && !tasks.groupDialog && (tasks.toolTipOpenedByClick === task || tasks.toolTipOpenedByClick === null)
+            interactive: model.IsWindow === true || mainItem.hasPlayer
 
-            mainItem: toolTipDelegate
+            // when the mouse leaves the tooltip area, a timer to hide is set for (timeout / 20) ms
+            // see plasma-framework/src/declarativeimports/core/tooltipdialog.cpp function dismiss()
+            // to compensate for that we multiply by 20 here, to get an effective leave timeout of 2s.
+            timeout: (tasks.toolTipOpenedByClick === task) ? 2000*20 : 4000
 
-            onContainsMouseChanged:  {
-                if (containsMouse) {
-                    toolTipDelegate.parentTask = task;
-                    toolTipDelegate.rootIndex = tasksModel.makeModelIndex(itemIndex, -1);
+            mainItem: (model.IsWindow === true) ? openWindowToolTipDelegate : pinnedAppToolTipDelegate
 
-                    toolTipDelegate.appName = Qt.binding(function() {
-                        return model.AppName;
-                    });
-                    toolTipDelegate.pidParent = Qt.binding(function() {
-                        return model.AppPid !== undefined ? model.AppPid : 0;
-                    });
-                    toolTipDelegate.windows = Qt.binding(function() {
-                        return model.WinIdList;
-                    });
-                    toolTipDelegate.isGroup = Qt.binding(function() {
-                        return model.IsGroupParent === true;
-                    });
-                    toolTipDelegate.icon = Qt.binding(function() {
-                        return model.decoration;
-                    });
-                    toolTipDelegate.launcherUrl = Qt.binding(function() {
-                        return model.LauncherUrlWithoutIcon;
-                    });
-                    toolTipDelegate.isLauncher = Qt.binding(function() {
-                        return model.IsLauncher === true;
-                    });
-                    toolTipDelegate.isMinimizedParent = Qt.binding(function() {
-                        return model.IsMinimized === true;
-                    });
-                    toolTipDelegate.displayParent = Qt.binding(function() {
-                        return model.display;
-                    });
-                    toolTipDelegate.genericName = Qt.binding(function() {
-                        return model.GenericName;
-                    });
-                    toolTipDelegate.virtualDesktopParent = Qt.binding(function() {
-                        return (model.VirtualDesktops !== undefined && model.VirtualDesktops.length > 0) ? model.VirtualDesktops : [0];
-                    });
-                    toolTipDelegate.isOnAllVirtualDesktopsParent = Qt.binding(function() {
-                        return model.IsOnAllVirtualDesktops === true;
-                    });
-                    toolTipDelegate.activitiesParent = Qt.binding(function() {
-                        return model.Activities;
-                    });
-
-                    toolTipDelegate.smartLauncherCountVisible = Qt.binding(function() {
-                        return task.smartLauncherItem && task.smartLauncherItem.countVisible;
-                    });
-                    toolTipDelegate.smartLauncherCount = Qt.binding(function() {
-                        return toolTipDelegate.smartLauncherCountVisible ? task.smartLauncherItem.count : 0;
-                    });
+            onToolTipVisibleChanged: {
+                if (!toolTipVisible) {
+                    tasks.toolTipOpenedByClick = null;
                 }
+            }
+
+            onContainsMouseChanged: if (containsMouse) {
+                updateMainItemBindings();
+            }
+
+            // Will also be called in activateTaskAtIndex(index)
+            function updateMainItemBindings() {
+                if (tasks.toolTipOpenedByClick !== null && tasks.toolTipOpenedByClick !== task) {
+                    return;
+                }
+
+                mainItem.parentTask = task;
+                mainItem.rootIndex = tasksModel.makeModelIndex(itemIndex, -1);
+
+                mainItem.appName = Qt.binding(() => model.AppName);
+                mainItem.pidParent = Qt.binding(() => model.AppPid !== undefined ? model.AppPid : 0);
+                mainItem.windows = Qt.binding(() => model.WinIdList);
+                mainItem.isGroup = Qt.binding(() => model.IsGroupParent === true);
+                mainItem.icon = Qt.binding(() => model.decoration);
+                mainItem.launcherUrl = Qt.binding(() => model.LauncherUrlWithoutIcon);
+                mainItem.isLauncher = Qt.binding(() => model.IsLauncher === true);
+                mainItem.isMinimizedParent = Qt.binding(() => model.IsMinimized === true);
+                mainItem.displayParent = Qt.binding(() => model.display);
+                mainItem.genericName = Qt.binding(() => model.GenericName);
+                mainItem.virtualDesktopParent = Qt.binding(() =>
+                    (model.VirtualDesktops !== undefined && model.VirtualDesktops.length > 0) ? model.VirtualDesktops : [0]);
+                mainItem.isOnAllVirtualDesktopsParent = Qt.binding(() => model.IsOnAllVirtualDesktops === true);
+                mainItem.activitiesParent = Qt.binding(() => model.Activities);
+
+                mainItem.smartLauncherCountVisible = Qt.binding(() => task.smartLauncherItem && task.smartLauncherItem.countVisible);
+                mainItem.smartLauncherCount = Qt.binding(() => mainItem.smartLauncherCountVisible ? task.smartLauncherItem.count : 0);
             }
         }
     }
@@ -507,7 +500,7 @@ MouseArea {
         }
     }
 
-    PlasmaComponents.Label {
+    PlasmaComponents3.Label {
         id: label
 
         visible: (inPopup || !iconsOnly && model.IsLauncher !== true

@@ -1,24 +1,11 @@
-/***************************************************************************
- *   Copyright (C) 2012-2016 by Eike Hein <hein@kde.org>                   *
- *   Copyright (C) 2016 by Kai Uwe Broulik <kde@privat.broulik.de>         *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA .        *
- ***************************************************************************/
+/*
+    SPDX-FileCopyrightText: 2012-2016 Eike Hein <hein@kde.org>
+    SPDX-FileCopyrightText: 2016 Kai Uwe Broulik <kde@privat.broulik.de>
 
-import QtQuick 2.0
+    SPDX-License-Identifier: GPL-2.0-or-later
+*/
+
+import QtQuick 2.15
 
 import org.kde.plasma.plasmoid 2.0
 
@@ -65,9 +52,15 @@ PlasmaComponents.ContextMenu {
 
     Component.onCompleted: {
         // Cannot have "Connections" as child of PlasmaCoponents.ContextMenu.
-        backend.showAllPlaces.connect(function() {
-            visualParent.showContextMenu({showAllPlaces: true});
-        });
+        backend.showAllPlaces.connect(showContextMenuWithAllPlaces);
+    }
+
+    Component.onDestruction: {
+        backend.showAllPlaces.disconnect(showContextMenuWithAllPlaces);
+    }
+
+    function showContextMenuWithAllPlaces() {
+        visualParent.showContextMenu({showAllPlaces: true});
     }
 
     function get(modelProp) {
@@ -80,17 +73,19 @@ PlasmaComponents.ContextMenu {
     }
 
     function newMenuItem(parent) {
-        return Qt.createQmlObject(
-            "import org.kde.plasma.components 2.0 as PlasmaComponents;" +
-            "PlasmaComponents.MenuItem {}",
-            parent);
+        return Qt.createQmlObject(`
+            import org.kde.plasma.components 2.0 as PlasmaComponents
+
+            PlasmaComponents.MenuItem {}
+        `, parent);
     }
 
     function newSeparator(parent) {
-        return Qt.createQmlObject(
-            "import org.kde.plasma.components 2.0 as PlasmaComponents;" +
-            "PlasmaComponents.MenuItem { separator: true }",
-            parent);
+        return Qt.createQmlObject(`
+            import org.kde.plasma.components 2.0 as PlasmaComponents
+
+            PlasmaComponents.MenuItem { separator: true }
+            `, parent);
     }
 
     function loadDynamicLaunchActions(launcherUrl) {
@@ -111,6 +106,13 @@ PlasmaComponents.ContextMenu {
                 actions: backend.jumpListActions(launcherUrl, menu)
             }
         ]
+
+        // C++ can override section heading by returning a QString as first action
+        sections.forEach((section) => {
+            if (typeof section.actions[0] === "string") {
+                section.title = section.actions.shift(); // take first
+            }
+        });
 
         // QMenu does not limit its width automatically. Even if we set a maximumWidth
         // it would just cut off text rather than eliding. So we do this manually.
@@ -148,7 +150,7 @@ PlasmaComponents.ContextMenu {
                 }
 
                 if (elided) {
-                    item.action.text += "...";
+                    item.action.text += "…";
                 }
 
                 menu.addMenuItem(item, startNewInstanceItem);
@@ -240,7 +242,7 @@ PlasmaComponents.ContextMenu {
 
                 // If we don't have a window associated with the player but we can raise
                 // it through MPRIS we'll offer a "Restore" option
-                if (!startNewInstanceItem.visible && playerData.CanRaise) {
+                if (get(atm.IsLauncher) === true && !startNewInstanceItem.visible && playerData.CanRaise) {
                     menuItem = menu.newMenuItem(menu);
                     menuItem.text = i18nc("Open or bring to the front window of media player app", "Restore");
                     menuItem.icon = playerData["Desktop Icon Name"];
@@ -278,17 +280,14 @@ PlasmaComponents.ContextMenu {
 
     PlasmaComponents.MenuItem {
         id: startNewInstanceItem
-        visible: (visualParent && get(atm.IsLauncher) !== true && get(atm.IsStartup) !== true)
-
-        enabled: visualParent && get(atm.LauncherUrlWithoutIcon) != ""
-
-        text: i18n("Start New Instance")
-        icon: "list-add-symbolic"
+        visible: get(atm.CanLaunchNewInstance)
+        text: i18n("Open New Window")
+        icon: "window-new"
 
         onClicked: tasksModel.requestNewInstance(modelIndex)
     }
 
-        PlasmaComponents.MenuItem {
+    PlasmaComponents.MenuItem {
         id: virtualDesktopsMenuItem
 
         visible: virtualDesktopInfo.numberOfDesktops > 1
@@ -418,7 +417,7 @@ PlasmaComponents.ContextMenu {
                     return menu.visualParent && menu.get(atm.Activities).length === 0;
                 });
                 menuItem.toggled.connect(function(checked) {
-                    var newActivities = undefined; // will cast to an empty QStringList i.e all activities
+                    let newActivities = []; // will cast to an empty QStringList i.e all activities
                     if (!checked) {
                         newActivities = new Array(activityInfo.currentActivity);
                     }
@@ -458,9 +457,148 @@ PlasmaComponents.ContextMenu {
                 }
 
                 menu.newSeparator(activitiesDesktopsMenu);
+
+                for (var i = 0; i < runningActivities.length; ++i) {
+                    var activityId = runningActivities[i];
+                    var onActivities = menu.get(atm.Activities);
+
+                    // if the task is on a single activity, don't insert a "move to" item for that activity
+                    if(onActivities.length == 1 && onActivities[0] == activityId) {
+                        continue;
+                    }
+
+                    menuItem = menu.newMenuItem(activitiesDesktopsMenu);
+                    menuItem.text = i18n("Move to %1", activityInfo.activityName(activityId))
+                    menuItem.clicked.connect((function(activityId) {
+                        return function () {
+                            return tasksModel.requestActivities(menu.modelIndex, [activityId]);
+                        };
+                    })(activityId));
+                }
+
+                menu.newSeparator(activitiesDesktopsMenu);
             }
 
             Component.onCompleted: refresh()
+        }
+    }
+
+    PlasmaComponents.MenuItem {
+        id: launcherToggleAction
+
+        visible: visualParent
+                     && get(atm.IsLauncher) !== true
+                     && get(atm.IsStartup) !== true
+                     && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
+                     && (activityInfo.numberOfRunningActivities < 2)
+                     && !doesBelongToCurrentActivity()
+
+        enabled: visualParent && get(atm.LauncherUrlWithoutIcon) != ""
+
+        text: i18n("&Pin to Task Manager")
+        icon: "window-pin"
+
+        function doesBelongToCurrentActivity() {
+            return tasksModel.launcherActivities(get(atm.LauncherUrlWithoutIcon)).some(function(activity) {
+                return activity === activityInfo.currentActivity || activity === activityInfo.nullUuid;
+            });
+        }
+
+        onClicked: {
+            tasksModel.requestAddLauncher(get(atm.LauncherUrl));
+        }
+    }
+
+    PlasmaComponents.MenuItem {
+        id: showLauncherInActivitiesItem
+
+        text: i18n("&Pin to Task Manager")
+        icon: "window-pin"
+
+        visible: visualParent
+                     && get(atm.IsStartup) !== true
+                     && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
+                     && (activityInfo.numberOfRunningActivities >= 2)
+
+        Connections {
+            target: activityInfo
+            function onNumberOfRunningActivitiesChanged() {
+                activitiesDesktopsMenu.refresh()
+            }
+        }
+
+        PlasmaComponents.ContextMenu {
+            id: activitiesLaunchersMenu
+            visualParent: showLauncherInActivitiesItem.action
+
+            function refresh() {
+                clearMenuItems();
+
+                if (menu.visualParent === null) return;
+
+                var createNewItem = function(id, title, url, activities) {
+                    var result = menu.newMenuItem(activitiesLaunchersMenu);
+                    result.text = title;
+
+                    result.visible = true;
+                    result.checkable = true;
+
+                    result.checked = activities.some(function(activity) { return activity === id });
+
+                    result.clicked.connect(
+                        function() {
+                            if (result.checked) {
+                                tasksModel.requestAddLauncherToActivity(url, id);
+                            } else {
+                                tasksModel.requestRemoveLauncherFromActivity(url, id);
+                            }
+                        }
+                    );
+
+                    return result;
+                }
+
+                if (menu.visualParent === null) return;
+
+                var url = menu.get(atm.LauncherUrlWithoutIcon);
+
+                var activities = tasksModel.launcherActivities(url);
+
+                createNewItem(activityInfo.nullUuid, i18n("On All Activities"), url, activities);
+
+                if (activityInfo.numberOfRunningActivities <= 1) {
+                    return;
+                }
+
+                createNewItem(activityInfo.currentActivity, i18n("On The Current Activity"), url, activities);
+
+                menu.newSeparator(activitiesLaunchersMenu);
+
+                var runningActivities = activityInfo.runningActivities();
+
+                runningActivities.forEach(function(id) {
+                    createNewItem(id, activityInfo.activityName(id), url, activities);
+                });
+            }
+
+            Component.onCompleted: {
+                menu.onVisualParentChanged.connect(refresh);
+                refresh();
+            }
+        }
+    }
+
+    PlasmaComponents.MenuItem {
+        visible: (visualParent
+                && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
+                && !launcherToggleAction.visible
+                && activityInfo.numberOfRunningActivities < 2)
+
+        text: i18n("Unpin from Task Manager")
+        icon: "window-unpin"
+
+        onClicked: {
+            tasksModel.requestRemoveLauncher(get(atm.LauncherUrlWithoutIcon));
         }
     }
 
@@ -471,7 +609,7 @@ PlasmaComponents.ContextMenu {
 
         enabled: visible
 
-        text: i18n("More Actions")
+        text: i18n("More")
         icon: "view-more-symbolic"
 
         PlasmaComponents.ContextMenu {
@@ -617,125 +755,7 @@ PlasmaComponents.ContextMenu {
         }
     }
 
-    PlasmaComponents.MenuItem {
-        id: launcherToggleAction
-
-        visible: visualParent
-                     && get(atm.IsLauncher) !== true
-                     && get(atm.IsStartup) !== true
-                     && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
-                     && (activityInfo.numberOfRunningActivities < 2)
-                     && tasksModel.launcherPosition(get(atm.LauncherUrlWithoutIcon)) == -1
-
-        enabled: visualParent && get(atm.LauncherUrlWithoutIcon) != ""
-
-        text: i18n("&Pin to Task Manager")
-        icon: "window-pin"
-
-        onClicked: {
-            if (tasksModel.launcherPosition(get(atm.LauncherUrlWithoutIcon)) !== -1) {
-                tasksModel.requestRemoveLauncher(get(atm.LauncherUrlWithoutIcon));
-            } else {
-                tasksModel.requestAddLauncher(get(atm.LauncherUrl));
-            }
-        }
-    }
-
-    PlasmaComponents.MenuItem {
-        id: showLauncherInActivitiesItem
-
-        text: i18n("&Pin to Task Manager")
-        icon: "window-pin"
-
-        visible: visualParent
-                     && get(atm.IsLauncher) !== true
-                     && get(atm.IsStartup) !== true
-                     && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
-                     && (activityInfo.numberOfRunningActivities >= 2)
-
-        Connections {
-            target: activityInfo
-            function onNumberOfRunningActivitiesChanged() {
-                activitiesDesktopsMenu.refresh()
-            }
-        }
-
-        PlasmaComponents.ContextMenu {
-            id: activitiesLaunchersMenu
-            visualParent: showLauncherInActivitiesItem.action
-
-            function refresh() {
-                clearMenuItems();
-
-                if (menu.visualParent === null) return;
-
-                var createNewItem = function(id, title, url, activities) {
-                    var result = menu.newMenuItem(activitiesLaunchersMenu);
-                    result.text = title;
-
-                    result.visible = true;
-                    result.checkable = true;
-
-                    result.checked = activities.some(function(activity) { return activity === id });
-
-                    result.clicked.connect(
-                        function() {
-                            if (result.checked) {
-                                tasksModel.requestAddLauncherToActivity(url, id);
-                            } else {
-                                tasksModel.requestRemoveLauncherFromActivity(url, id);
-                            }
-                        }
-                    );
-
-                    return result;
-                }
-
-                if (menu.visualParent === null) return;
-
-                var url = menu.get(atm.LauncherUrlWithoutIcon);
-
-                var activities = tasksModel.launcherActivities(url);
-
-                var NULL_UUID = "00000000-0000-0000-0000-000000000000";
-
-                createNewItem(NULL_UUID, i18n("On All Activities"), url, activities);
-
-                if (activityInfo.numberOfRunningActivities <= 1) {
-                    return;
-                }
-
-                createNewItem(activityInfo.currentActivity, i18n("On The Current Activity"), url, activities);
-
-                menu.newSeparator(activitiesLaunchersMenu);
-
-                var runningActivities = activityInfo.runningActivities();
-
-                runningActivities.forEach(function(id) {
-                    createNewItem(id, activityInfo.activityName(id), url, activities);
-                });
-            }
-
-            Component.onCompleted: {
-                menu.onVisualParentChanged.connect(refresh);
-                refresh();
-            }
-        }
-    }
-
-    PlasmaComponents.MenuItem {
-        visible: (visualParent
-                && plasmoid.immutability !== PlasmaCore.Types.SystemImmutable
-                && !launcherToggleAction.visible
-                && !showLauncherInActivitiesItem.visible)
-
-        text: i18n("Unpin from Task Manager")
-        icon: "window-unpin"
-
-        onClicked: {
-            tasksModel.requestRemoveLauncher(get(atm.LauncherUrlWithoutIcon));
-        }
-    }
+    PlasmaComponents.MenuItem { separator: true }
 
     PlasmaComponents.MenuItem {
         id: closeWindowItem

@@ -1,23 +1,10 @@
-/***************************************************************************
- *   Copyright (C) 2012-2016 by Eike Hein <hein@kde.org>                   *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA .        *
- ***************************************************************************/
+/*
+    SPDX-FileCopyrightText: 2012-2016 Eike Hein <hein@kde.org>
 
-import QtQuick 2.0
+    SPDX-License-Identifier: GPL-2.0-or-later
+*/
+
+import QtQuick 2.15
 
 import org.kde.draganddrop 2.0
 
@@ -30,6 +17,7 @@ Item {
 
     property Item target
     property Item ignoredItem
+    property bool isGroupDialog: false
     property bool moved: false
 
     property alias hoveredItem: dropHandler.hoveredItem
@@ -78,7 +66,12 @@ Item {
                 return;
             }
 
-            var above = target.childAt(event.x, event.y);
+            let above;
+            if (isGroupDialog) {
+                above = target.itemAt(event.x, event.y);
+            } else {
+                above = target.childAt(event.x, event.y);
+            }
 
             if (!above) {
                 hoveredItem = null;
@@ -114,9 +107,9 @@ Item {
                 var insertAt = TaskTools.insertIndexAt(above, event.x, event.y);
 
                 if (tasks.dragSource !== above && tasks.dragSource.itemIndex !== insertAt) {
-                    if (groupDialog.visible && groupDialog.visualParent) {
+                    if (!!tasks.groupDialog) {
                         tasksModel.move(tasks.dragSource.itemIndex, insertAt,
-                            tasksModel.makeModelIndex(groupDialog.visualParent.itemIndex));
+                            tasksModel.makeModelIndex(tasks.groupDialog.visualParent.itemIndex));
                     } else {
                         tasksModel.move(tasks.dragSource.itemIndex, insertAt);
                     }
@@ -162,8 +155,7 @@ Item {
 
             onTriggered: {
                 if (parent.hoveredItem.m.IsGroupParent === true) {
-                    groupDialog.visualParent = parent.hoveredItem;
-                    groupDialog.visible = true;
+                    TaskTools.createGroupDialog(parent.hoveredItem);
                 } else if (parent.hoveredItem.m.IsLauncher !== true) {
                     tasksModel.requestActivate(parent.hoveredItem.modelIndex());
                 }

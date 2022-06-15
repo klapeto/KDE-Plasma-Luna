@@ -1,73 +1,58 @@
 /*
-*   Copyright 2013 by Sebastian Kügler <sebas@kde.org>
-*   Copyright 2014 by Martin Gräßlin <mgraesslin@kde.org>
-*   Copyright 2016 by Kai Uwe Broulik <kde@privat.broulik.de>
-*   Copyright 2017 by Roman Gilg <subdiff@gmail.com>
-*   Copyright 2020 by Nate Graham <nate@kde.org>
-*
-*   This program is free software; you can redistribute it and/or modify
-*   it under the terms of the GNU Library General Public License as
-*   published by the Free Software Foundation; either version 2, or
-*   (at your option) any later version.
-*
-*   This program is distributed in the hope that it will be useful,
-*   but WITHOUT ANY WARRANTY; without even the implied warranty of
-*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-*   GNU Library General Public License for more details
-*
-*   You should have received a copy of the GNU Library General Public
-*   License along with this program; if not, write to the
-*   Free Software Foundation, Inc.,
-*   51 Franklin Street, Fifth Floor, Boston, MA  2.010-1301, USA.
+    SPDX-FileCopyrightText: 2013 Sebastian Kügler <sebas@kde.org>
+    SPDX-FileCopyrightText: 2014 Martin Gräßlin <mgraesslin@kde.org>
+    SPDX-FileCopyrightText: 2016 Kai Uwe Broulik <kde@privat.broulik.de>
+    SPDX-FileCopyrightText: 2017 Roman Gilg <subdiff@gmail.com>
+    SPDX-FileCopyrightText: 2020 Nate Graham <nate@kde.org>
+
+    SPDX-License-Identifier: LGPL-2.0-or-later
 */
 
-import QtQuick 2.6
-import QtQuick.Layouts 1.1
-import QtGraphicalEffects 1.0
-import QtQml.Models 2.2
+import QtQuick 2.15
+import QtQuick.Layouts 1.15
+import QtGraphicalEffects 1.15
 
 import org.kde.plasma.core 2.0 as PlasmaCore
-// for Highlight
-import org.kde.plasma.components 2.0 as PlasmaComponents
 import org.kde.plasma.components 3.0 as PlasmaComponents3
 import org.kde.plasma.extras 2.0 as PlasmaExtras
-import org.kde.kquickcontrolsaddons 2.0 as KQuickControlsAddons
 
 ColumnLayout {
     property var submodelIndex
     property int flatIndex: isGroup && index != undefined ? index : 0
+    readonly property int appPid: isGroup ? model.AppPid : pidParent
 
-    readonly property string mprisSourceName: mpris2Source.sourceNameForLauncherUrl(toolTipDelegate.launcherUrl, isGroup ? AppPid : pidParent)
-    readonly property var playerData: mprisSourceName != "" ? mpris2Source.data[mprisSourceName] : 0
-    readonly property bool hasPlayer: !!mprisSourceName && !!playerData
-    readonly property bool playing: hasPlayer && playerData.PlaybackStatus === "Playing"
-    readonly property bool canControl: hasPlayer && playerData.CanControl
-    readonly property bool canPlay: hasPlayer && playerData.CanPlay
-    readonly property bool canPause: hasPlayer && playerData.CanPause
-    readonly property bool canGoBack: hasPlayer && playerData.CanGoPrevious
-    readonly property bool canGoNext: hasPlayer && playerData.CanGoNext
-    readonly property bool canRaise: hasPlayer && playerData.CanRaise
-    readonly property var currentMetadata: hasPlayer ? playerData.Metadata : ({})
+    // HACK: Avoid blank space in the tooltip after closing a window
+    ListView.onPooled: width = height = 0
+    ListView.onReused: width = height = undefined
 
-    readonly property string track: {
-        var xesamTitle = currentMetadata["xesam:title"]
-        if (xesamTitle) {
-            return xesamTitle;
+    readonly property string title: {
+        if (!isWin) {
+            return genericName || "";
         }
-        // if no track title is given, print out the file name
-        var xesamUrl = currentMetadata["xesam:url"] ? currentMetadata["xesam:url"].toString() : ""
-        if (!xesamUrl) {
-            return "";
+
+        let text;
+        if (isGroup) {
+            if (model.display === undefined) {
+                return "";
+            }
+            text = model.display.toString();
+        } else {
+            text = displayParent;
         }
-        var lastSlashPos = xesamUrl.lastIndexOf('/')
-        if (lastSlashPos < 0) {
-            return "";
+
+        // KWin appends increasing integers in between pointy brackets to otherwise equal window titles.
+        // In this case save <#number> as counter and delete it at the end of text.
+        text = `${(text.match(/.*(?=\s*(—|-))/) || [""])[0]}${(text.match(/<\d+>/) || [""]).pop()}`;
+
+        // In case the window title had only redundant information (i.e. appName), text is now empty.
+        // Add a hyphen to indicate that and avoid empty space.
+        if (text === "") {
+            text = "—";
         }
-        var lastUrlPart = xesamUrl.substring(lastSlashPos + 1)
-        return decodeURIComponent(lastUrlPart);
+        return text;
     }
-    readonly property string artist: currentMetadata["xesam:artist"] || ""
-    readonly property string albumArt: currentMetadata["mpris:artUrl"] || ""
+    readonly property bool titleIncludesTrack: playerController.item
+        && title.includes(playerController.item.track)
 
     spacing: PlasmaCore.Units.smallSpacing
 
@@ -78,7 +63,7 @@ ColumnLayout {
         spacing: isWin ? PlasmaCore.Units.smallSpacing : PlasmaCore.Units.largeSpacing
 
         // This number controls the overall size of the window tooltips
-        Layout.maximumWidth: PlasmaCore.Units.gridUnit * 16
+        Layout.maximumWidth: toolTipDelegate.tooltipInstanceMaximumWidth
         Layout.minimumWidth: isWin ? Layout.maximumWidth : 0
         Layout.alignment: Qt.AlignHCenter | Qt.AlignVCenter
         // match margins of DefaultToolTip.qml in plasma-framework
@@ -98,19 +83,21 @@ ColumnLayout {
                 text: appName
                 opacity: flatIndex == 0
                 visible: text.length !== 0
+                textFormat: Text.PlainText
             }
             // window title
-            PlasmaComponents.Label {
+            PlasmaComponents3.Label {
                 id: winTitle
                 maximumLineCount: 1
                 Layout.fillWidth: true
                 elide: Text.ElideRight
-                text: generateTitle()
+                text: titleIncludesTrack ? "" : title
                 opacity: 0.75
-                visible: !hasPlayer && text.length !== 0 && text !== appNameHeading.text
+                visible: title.length !== 0 && title !== appNameHeading.text
+                textFormat: Text.PlainText
             }
             // subtext
-            PlasmaComponents.Label {
+            PlasmaComponents3.Label {
                 id: subtext
                 maximumLineCount: 1
                 Layout.fillWidth: true
@@ -118,6 +105,7 @@ ColumnLayout {
                 text: isWin ? generateSubText() : ""
                 opacity: 0.6
                 visible: text.length !== 0 && text !== appNameHeading.text
+                textFormat: Text.PlainText
             }
         }
 
@@ -142,8 +130,6 @@ ColumnLayout {
             Layout.alignment: Qt.AlignRight | Qt.AlignTop
             visible: isWin
             icon.name: "window-close"
-            icon.width: PlasmaCore.Units.iconSizes.small
-            icon.height: PlasmaCore.Units.iconSizes.small
             onClicked: {
                 backend.cancelHighlightWindows();
                 tasksModel.requestClose(submodelIndex);
@@ -158,6 +144,7 @@ ColumnLayout {
         Layout.minimumWidth: header.width
         Layout.preferredHeight: header.width / 2
 
+        clip: true
         visible: toolTipDelegate.isWin
 
         readonly property bool isMinimized: isGroup ? IsMinimized == true : isMinimizedParent
@@ -165,51 +152,107 @@ ColumnLayout {
         readonly property var winId: toolTipDelegate.isWin && toolTipDelegate.windows[flatIndex] !== undefined ? toolTipDelegate.windows[flatIndex] : 0
 
         // There's no PlasmaComponents3 version
-        PlasmaComponents.Highlight {
+        PlasmaExtras.Highlight {
             anchors.fill: hoverHandler
-            visible: hoverHandler.containsMouse
-            pressed: hoverHandler.containsPress
+            visible: hoverHandler.item ? hoverHandler.item.containsMouse : false
+            pressed: hoverHandler.item ? hoverHandler.item.containsPress : false
+            hovered: true
         }
 
-        PlasmaCore.WindowThumbnail {
+        Loader {
+            id: thumbnailLoader
+            active: !albumArtImage.visible && Number.isInteger(thumbnailSourceItem.winId) && flatIndex !== -1 // Avoid loading when the instance is going to be destroyed
+            asynchronous: true
+            visible: active
             anchors.fill: hoverHandler
-            // Indent by one pixel to make sure we never cover up the entire highlight
-            anchors.margins: 1
+            // Indent a little bit so that neither the thumbnail nor the drop
+            // shadow can cover up the highlight
+            anchors.margins: PlasmaCore.Units.smallSpacing * 2
 
-            visible: !albumArtImage.visible && !thumbnailSourceItem.isMinimized && Number.isInteger(thumbnailSourceItem.winId)
-            winId: Number.isInteger(thumbnailSourceItem.winId) ? thumbnailSourceItem.winId : 0
+            sourceComponent: thumbnailSourceItem.isMinimized ? iconItem : x11Thumbnail
+
+            Component {
+                id: x11Thumbnail
+
+                PlasmaCore.WindowThumbnail {
+                    winId: thumbnailSourceItem.winId
+                }
+            }
+
+            // when minimized, we don't have a preview on X11, so show the icon
+            Component {
+                id: iconItem
+
+                PlasmaCore.IconItem {
+                    source: icon
+                    animated: false
+                    usesPlasmaTheme: false
+                    visible: valid
+                }
+            }
         }
 
         Loader {
             id: pipeWireLoader
             anchors.fill: hoverHandler
-            anchors.margins: 1
+            // Indent a little bit so that neither the thumbnail nor the drop
+            // shadow can cover up the highlight
+            anchors.margins: thumbnailLoader.anchors.margins
 
-            active: !albumArtImage.visible && !Number.isInteger(thumbnailSourceItem.winId)
-
-            //In a loader since we might not have PipeWire available yet
+            active: !albumArtImage.visible && !Number.isInteger(thumbnailSourceItem.winId) && flatIndex !== -1
+            asynchronous: true
+            //In a loader since we might not have PipeWire available yet (WITH_PIPEWIRE could be undefined in plasma-workspace/libtaskmanager/declarative/taskmanagerplugin.cpp)
             source: "PipeWireThumbnail.qml"
         }
 
-        Image {
-            id: albumArtBackground
-            source: albumArt
-            anchors.fill: parent
-            fillMode: Image.PreserveAspectCrop
-            visible: albumArtImage.available
-            layer.enabled: true
-            opacity: 0.25
-            layer.effect: FastBlur {
-                source: albumArtBackground
-                anchors.fill: parent
-                radius: 30
+        Loader {
+            active: (pipeWireLoader.active && pipeWireLoader.item.visible) || (thumbnailLoader.status === Loader.Ready && !thumbnailSourceItem.isMinimized)
+            asynchronous: true
+            visible: active
+            anchors.fill: pipeWireLoader.active ? pipeWireLoader : thumbnailLoader
+
+            sourceComponent: DropShadow {
+                horizontalOffset: 0
+                verticalOffset: Math.round(3 * PlasmaCore.Units.devicePixelRatio)
+                radius: Math.round(8.0 * PlasmaCore.Units.devicePixelRatio)
+                samples: Math.round(radius * 1.5)
+                color: "Black"
+                source: pipeWireLoader.active ? pipeWireLoader.item : thumbnailLoader.item // source could be undefined when albumArt is available, so put it in a Loader.
+            }
+        }
+
+        Loader {
+            active: albumArtImage.visible && albumArtImage.status === Image.Ready && flatIndex !== -1 // Avoid loading when the instance is going to be destroyed
+            asynchronous: true
+            visible: active
+            anchors.centerIn: hoverHandler
+
+            sourceComponent: ShaderEffect {
+                id: albumArtBackground
+                readonly property Image source: albumArtImage
+
+                // Manual implementation of Image.PreserveAspectCrop
+                readonly property real scaleFactor: Math.max(hoverHandler.width / source.paintedWidth, hoverHandler.height / source.paintedHeight)
+                width: Math.round(source.paintedWidth * scaleFactor)
+                height: Math.round(source.paintedHeight * scaleFactor)
+                layer.enabled: true
+                opacity: 0.25
+                layer.effect: FastBlur {
+                    source: albumArtBackground
+                    anchors.fill: source
+                    radius: 30
+                }
             }
         }
 
         Image {
             id: albumArtImage
             // also Image.Loading to prevent loading thumbnails just because the album art takes a split second to load
-            readonly property bool available: status === Image.Ready || status === Image.Loading
+            // if this is a group tooltip, we check if window title and track match, to allow distinguishing the different windows
+            // if this app is a browser, we also check the title, so album art is not shown when the user is on some other tab
+            // in all other cases we can safely show the album art without checking the title
+            readonly property bool available: (status === Image.Ready || status === Image.Loading)
+                && (!(isGroup || backend.applicationCategories(launcherUrl).includes("WebBrowser")) || titleIncludesTrack)
 
             anchors.fill: hoverHandler
             // Indent by one pixel to make sure we never cover up the entire highlight
@@ -217,155 +260,116 @@ ColumnLayout {
             sourceSize: Qt.size(parent.width, parent.height)
 
             asynchronous: true
-            source: albumArt
+            source: playerController.item ? playerController.item.albumArt : ""
             fillMode: Image.PreserveAspectFit
             visible: available
         }
 
-        // when minimized, we don't have a preview on X11, so show the icon
-        PlasmaCore.IconItem {
-            width: parent.width
-            height: thumbnailSourceItem.height
-            anchors.horizontalCenter: parent.horizontalCenter
-            source: thumbnailSourceItem.isMinimized && !albumArtImage.visible && Number.isInteger(thumbnailSourceItem.winId) ? icon : ""
-            animated: false
-            usesPlasmaTheme: false
-            visible: valid && !pipeWireLoader.active
-        }
-
-        ToolTipWindowMouseArea {
+        // hoverHandler has to be unloaded after the instance is pooled in order to avoid getting the old containsMouse status when the same instance is reused, so put it in a Loader.
+        Loader {
             id: hoverHandler
+            active: flatIndex !== -1
             anchors.fill: parent
-            rootTask: parentTask
-            modelIndex: submodelIndex
-            winId: thumbnailSourceItem.winId
+            sourceComponent: ToolTipWindowMouseArea {
+                rootTask: parentTask
+                modelIndex: submodelIndex
+                winId: thumbnailSourceItem.winId
+            }
         }
     }
 
-    // Player controls row
-    RowLayout {
+    // Player controls row, load on demand so group tooltips could be loaded faster
+    Loader {
+        id: playerController
+        active: hasPlayer && flatIndex !== -1 // Avoid loading when the instance is going to be destroyed
+        asynchronous: true
+        visible: active
+        Layout.fillWidth: true
         Layout.maximumWidth: header.Layout.maximumWidth
-        // Match margins of header
-        Layout.leftMargin: isWin ? 0 : PlasmaCore.Units.gridUnit / 2
-        Layout.rightMargin: isWin ? 0 : PlasmaCore.Units.gridUnit / 2
+        Layout.leftMargin: header.Layout.margins
+        Layout.rightMargin: header.Layout.margins
 
-        visible: hasPlayer
-        enabled: canControl
-
-        ColumnLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: PlasmaCore.Units.smallSpacing
-            Layout.bottomMargin: PlasmaCore.Units.smallSpacing
-            Layout.rightMargin: isWin ? PlasmaCore.Units.smallSpacing : PlasmaCore.Units.largeSpacing
-            spacing: 0
-
-             ScrollableTextWrapper {
-                id: songTextWrapper
-
-                Layout.fillWidth: true
-                Layout.preferredHeight: songText.height
-                implicitWidth: songText.implicitWidth
-
-                PlasmaComponents3.Label {
-                    id: songText
-                    parent: songTextWrapper
-                    width: parent.width
-                    height: undefined
-                    lineHeight: 1
-                    maximumLineCount: artistText.visible? 1 : 2
-                    wrapMode: Text.NoWrap
-                    elide: parent.state ? Text.ElideNone : Text.ElideRight
-                    text: track || ""
-                }
-             }
-
-            ScrollableTextWrapper {
-                id: artistTextWrapper
-
-                Layout.fillWidth: true
-                Layout.preferredHeight: artistText.height
-                implicitWidth: artistText.implicitWidth
-                visible: artistText.text !== ""
-
-                PlasmaExtras.DescriptiveLabel {
-                    id: artistText
-                    parent: artistTextWrapper
-                    width: parent.width
-                    height: undefined
-                    wrapMode: Text.NoWrap
-                    lineHeight: 1
-                    elide: parent.state ? Text.ElideNone : Text.ElideRight
-                    text: artist || ""
-                    font: theme.smallestFont
-                }
-            }
-        }
-
-        PlasmaComponents3.ToolButton {
-            enabled: canGoBack
-            icon.name: LayoutMirroring.enabled ? "media-skip-forward" : "media-skip-backward"
-            onClicked: mpris2Source.goPrevious(mprisSourceName)
-        }
-
-        PlasmaComponents3.ToolButton {
-            enabled: playing ? canPause : canPlay
-            icon.name: playing ? "media-playback-pause" : "media-playback-start"
-            onClicked: {
-                if (!playing) {
-                    mpris2Source.play(mprisSourceName);
-                } else {
-                    mpris2Source.pause(mprisSourceName);
-                }
-            }
-        }
-
-        PlasmaComponents3.ToolButton {
-            enabled: canGoNext
-            icon.name: LayoutMirroring.enabled ? "media-skip-backward" : "media-skip-forward"
-            onClicked: mpris2Source.goNext(mprisSourceName)
-        }
+        source: "PlayerController.qml"
     }
 
-    function generateTitle() {
-        if (!isWin) {
-            return genericName != undefined ? genericName : "";
-        }
+    // Volume controls
+    Loader {
+        active: parentTask
+             && pulseAudio.item
+             && parentTask.audioIndicatorsEnabled
+             && parentTask.hasAudioStream
+             && flatIndex !== -1 // Avoid loading when the instance is going to be destroyed
+        asynchronous: true
+        visible: active
+        Layout.fillWidth: true
+        Layout.maximumWidth: header.Layout.maximumWidth
+        Layout.leftMargin: header.Layout.margins
+        Layout.rightMargin: header.Layout.margins
+        sourceComponent: RowLayout {
+            PlasmaComponents3.ToolButton { // Mute button
+                icon.width: PlasmaCore.Units.iconSizes.small
+                icon.height: PlasmaCore.Units.iconSizes.small
+                icon.name: if (checked) {
+                    "audio-volume-muted"
+                } else if (slider.displayValue <= 25) {
+                    "audio-volume-low"
+                } else if (slider.displayValue <= 75) {
+                    "audio-volume-medium"
+                } else {
+                    "audio-volume-high"
+                }
+                onClicked: parentTask.toggleMuted()
+                checked: parentTask.muted
 
-        var text;
-        if (isGroup) {
-            if (model.display === undefined) {
-                return "";
+                PlasmaComponents3.ToolTip {
+                    text: parent.checked ?
+                        i18nc("button to unmute app", "Unmute %1", parentTask.appName)
+                        : i18nc("button to mute app", "Mute %1", parentTask.appName)
+                }
             }
-            text = model.display.toString();
-        } else {
-            text = displayParent;
-        }
 
-        // KWin appends increasing integers in between pointy brackets to otherwise equal window titles.
-        // In this case save <#number> as counter and delete it at the end of text.
-        var counter = text.match(/<\d+>\W*$/);
-        text = text.replace(/\s*<\d+>\W*$/, "");
+            PlasmaComponents3.Slider {
+                id: slider
 
-        // Remove appName from the end of text.
-        var appNameRegex = new RegExp(appName + "$", "i");
-        text = text.replace(appNameRegex, "");
-        text = text.replace(/\s*(?:-|—)*\s*$/, "");
+                readonly property int displayValue: Math.round(value / to * 100)
+                readonly property int loudestVolume: {
+                    let v = 0
+                    parentTask.audioStreams.forEach((stream) => {
+                        v = Math.max(v, stream.volume)
+                    })
+                    return v
+                }
 
-        // Add counter back at the end.
-        if (counter !== null) {
-            if (text === "") {
-                text = counter;
-            } else {
-                text = text + " " + counter;
+                Layout.fillWidth: true
+                from: pulseAudio.item.minimalVolume
+                to: pulseAudio.item.normalVolume
+                value: loudestVolume
+                stepSize: to / 100
+                opacity: parentTask.muted ? 0.5 : 1
+
+                Accessible.name: i18nc("Accessibility data on volume slider", "Adjust volume for %1", parentTask.appName)
+
+                onMoved: parentTask.audioStreams.forEach((stream) => {
+                    let v = Math.max(from, value)
+                    if (v > 0 && loudestVolume > 0) { // prevent divide by 0
+                        // adjust volume relative to the loudest stream
+                        v = Math.min(Math.round(stream.volume / loudestVolume * v), to)
+                    }
+                    stream.model.Volume = v
+                    stream.model.Muted = v === 0
+                })
+            }
+            PlasmaComponents3.Label { // percent label
+                Layout.alignment: Qt.AlignHCenter
+                Layout.minimumWidth: percentMetrics.advanceWidth
+                horizontalAlignment: Qt.AlignRight
+                text: i18nc("volume percentage", "%1%", slider.displayValue)
+                TextMetrics {
+                    id: percentMetrics
+                    text: i18nc("only used for sizing, should be widest possible string", "100%")
+                }
             }
         }
-
-        // In case the window title had only redundant information (i.e. appName), text is now empty.
-        // Add a hyphen to indicate that and avoid empty space.
-        if (text === "") {
-            text = "—";
-        }
-        return text.toString();
     }
 
     function generateSubText() {
@@ -373,18 +377,19 @@ ColumnLayout {
             return "";
         }
 
-        var subTextEntries = [];
+        let subTextEntries = [];
 
-        var virtualDesktops = isGroup ? VirtualDesktops : virtualDesktopParent;
-        var virtualDesktopNameList = new Array();
-
-        for (var i = 0; i < virtualDesktops.length; ++i) {
-            virtualDesktopNameList.push(virtualDesktopInfo.desktopNames[virtualDesktopInfo.desktopIds.indexOf(virtualDesktops[i])]);
-        }
-
-        var onAllDesktops = (isGroup ? IsOnAllVirtualDesktops : isOnAllVirtualDesktopsParent) === true;
+        const onAllDesktops = (isGroup ? IsOnAllVirtualDesktops : isOnAllVirtualDesktopsParent) === true;
         if (!plasmoid.configuration.showOnlyCurrentDesktop && virtualDesktopInfo.numberOfDesktops > 1) {
-            if (!onAllDesktops && virtualDesktops.length > 0) {
+            const virtualDesktops = isGroup ? VirtualDesktops : virtualDesktopParent;
+
+            if (!onAllDesktops && virtualDesktops !== undefined && virtualDesktops.length > 0) {
+                let virtualDesktopNameList = new Array();
+
+                for (let i = 0; i < virtualDesktops.length; ++i) {
+                    virtualDesktopNameList.push(virtualDesktopInfo.desktopNames[virtualDesktopInfo.desktopIds.indexOf(virtualDesktops[i])]);
+                }
+
                 subTextEntries.push(i18nc("Comma-separated list of desktops", "On %1",
                     virtualDesktopNameList.join(", ")));
             } else if (onAllDesktops) {
@@ -392,7 +397,7 @@ ColumnLayout {
             }
         }
 
-        var act = isGroup ? Activities : activitiesParent;
+        const act = isGroup ? Activities : activitiesParent;
         if (act === undefined) {
             return subTextEntries.join("\n");
         }
@@ -401,11 +406,11 @@ ColumnLayout {
             subTextEntries.push(i18nc("Which virtual desktop a window is currently on",
                 "Available on all activities"));
         } else if (act.length > 0) {
-           var activityNames = [];
+            let activityNames = [];
 
-            for (var i = 0; i < act.length; i++) {
-                var activity = act[i];
-                var activityName = activityInfo.activityName(act[i]);
+            for (let i = 0; i < act.length; i++) {
+                const activity = act[i];
+                const activityName = activityInfo.activityName(act[i]);
                 if (activityName === "") {
                     continue;
                 }
